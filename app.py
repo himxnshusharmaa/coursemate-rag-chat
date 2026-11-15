@@ -16,7 +16,7 @@ from pypdf import PdfReader
 load_dotenv()
 
 st.set_page_config(
-    page_title="CourseMate RAG Book Chat",
+    page_title="CourseMate AI",
     page_icon="📚",
     layout="wide",
 )
