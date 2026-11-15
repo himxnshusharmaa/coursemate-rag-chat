@@ -1,3 +1,4 @@
+
 import hashlib
 import io
 import os
@@ -24,6 +25,22 @@ st.set_page_config(
 DB_DIRECTORY = Path("chroma_db")
 
 
+# ---------------- API KEY ---------------- #
+
+def get_groq_api_key():
+    key = os.getenv("GROQ_API_KEY")
+
+    if key:
+        return key
+
+    try:
+        return st.secrets.get("GROQ_API_KEY", "")
+    except Exception:
+        return ""
+
+
+# ---------------- EMBEDDING MODEL ---------------- #
+
 @st.cache_resource
 def get_embedding_model():
     """Load the embedding model once, then reuse it."""
@@ -35,6 +52,8 @@ def get_embedding_model():
         },
     )
 
+
+# ---------------- PDF EXTRACTION ---------------- #
 
 def extract_pdf_documents(file_bytes: bytes, filename: str) -> list[Document]:
     """Read text from each page of an uploaded PDF."""
@@ -58,6 +77,8 @@ def extract_pdf_documents(file_bytes: bytes, filename: str) -> list[Document]:
     return documents
 
 
+# ---------------- VECTOR DATABASE ---------------- #
+
 def build_vectorstore(file_bytes: bytes, filename: str):
     """Create or reuse a Chroma collection for the uploaded book."""
     documents = extract_pdf_documents(file_bytes, filename)
@@ -71,6 +92,7 @@ def build_vectorstore(file_bytes: bytes, filename: str):
         chunk_size=1500,
         chunk_overlap=100,
     )
+
     chunks = splitter.split_documents(documents)
 
     book_hash = hashlib.md5(file_bytes).hexdigest()
@@ -82,8 +104,8 @@ def build_vectorstore(file_bytes: bytes, filename: str):
         persist_directory=str(DB_DIRECTORY),
     )
 
-    # Reuse the database when this exact book was already processed.
     existing_chunks = vectorstore._collection.count()
+
     if existing_chunks > 0:
         return vectorstore, existing_chunks, True
 
@@ -91,13 +113,19 @@ def build_vectorstore(file_bytes: bytes, filename: str):
     batch_size = 32
 
     for start in range(0, len(chunks), batch_size):
-        batch = chunks[start : start + batch_size]
+        batch = chunks[start:start + batch_size]
         vectorstore.add_documents(batch)
 
-        completed = min((start + batch_size) / len(chunks), 1.0)
+        completed = min(
+            (start + batch_size) / len(chunks), 1.0
+        )
+
         progress.progress(
             completed,
-            text=f"Creating embeddings: {min(start + batch_size, len(chunks))}/{len(chunks)} chunks",
+            text=(
+                f"Creating embeddings: "
+                f"{min(start + batch_size, len(chunks))}/{len(chunks)} chunks"
+            ),
         )
 
     progress.empty()
@@ -105,8 +133,11 @@ def build_vectorstore(file_bytes: bytes, filename: str):
     return vectorstore, len(chunks), False
 
 
+# ---------------- QUESTION ANSWERING ---------------- #
+
 def answer_question(question: str, vectorstore, top_k: int, temperature: float):
     """Retrieve relevant chunks and generate a Groq answer."""
+
     retriever = vectorstore.as_retriever(
         search_type="mmr",
         search_kwargs={
@@ -131,9 +162,11 @@ def answer_question(question: str, vectorstore, top_k: int, temperature: float):
         [
             (
                 "system",
-                """You are a helpful AI assistant answering questions about an uploaded book.
+                """You are CourseMate AI, a helpful AI study assistant
+answering questions about an uploaded book.
 
 Use only the provided context.
+
 If the answer is not present in the context, say exactly:
 "I could not find the answer in the uploaded book."
 
@@ -153,6 +186,7 @@ Question:
     llm = ChatGroq(
         model="openai/gpt-oss-20b",
         temperature=temperature,
+        api_key=get_groq_api_key(),
     )
 
     response = (prompt | llm).invoke(
@@ -165,7 +199,7 @@ Question:
     return response.content, retrieved_docs
 
 
-# ---------------- UI ---------------- #
+# ---------------- SESSION STATE ---------------- #
 
 if "vectorstore" not in st.session_state:
     st.session_state.vectorstore = None
@@ -177,12 +211,21 @@ if "book_name" not in st.session_state:
     st.session_state.book_name = None
 
 
-st.title("📚 RAG Book Chat")
-st.caption("Upload a PDF book, then ask questions from its contents.")
+# ---------------- MAIN UI ---------------- #
 
+st.title("📚 CourseMate AI")
+
+st.caption(
+    "Your AI-powered study companion. "
+    "Upload a PDF and ask questions from its contents."
+)
+
+
+# ---------------- SIDEBAR ---------------- #
 
 with st.sidebar:
-    st.header("Book settings")
+
+    st.header("📖 Book Settings")
 
     uploaded_file = st.file_uploader(
         "Upload a PDF book",
@@ -205,11 +248,14 @@ with st.sidebar:
     )
 
     if st.button("Process Book", use_container_width=True):
+
         if uploaded_file is None:
             st.warning("Please upload a PDF first.")
+
         else:
             try:
                 with st.spinner("Reading your book..."):
+
                     vectorstore, chunk_count, reused = build_vectorstore(
                         uploaded_file.getvalue(),
                         uploaded_file.name,
@@ -221,11 +267,13 @@ with st.sidebar:
 
                 if reused:
                     st.success(
-                        f"Book loaded from existing database ({chunk_count} chunks)."
+                        f"Book loaded from existing database "
+                        f"({chunk_count} chunks)."
                     )
                 else:
                     st.success(
-                        f"Book processed successfully! Created {chunk_count} chunks."
+                        f"Book processed successfully! "
+                        f"Created {chunk_count} chunks."
                     )
 
             except Exception as error:
@@ -236,30 +284,47 @@ with st.sidebar:
         st.rerun()
 
     st.divider()
-    st.caption("Model: openai/gpt-oss-20b")
 
+    st.caption("Powered by Groq + LangChain + ChromaDB")
+
+
+# ---------------- BOOK STATUS ---------------- #
 
 if st.session_state.book_name:
-    st.info(f"Currently chatting with: **{st.session_state.book_name}**")
+    st.info(
+        f"Currently chatting with: **{st.session_state.book_name}**"
+    )
 else:
     st.info("Upload a PDF from the sidebar to begin.")
 
 
+# ---------------- CHAT HISTORY ---------------- #
+
 for message in st.session_state.messages:
+
     with st.chat_message(message["role"]):
         st.markdown(message["content"])
 
 
-question = st.chat_input("Ask a question about the uploaded book...")
+# ---------------- CHAT INPUT ---------------- #
+
+question = st.chat_input(
+    "Ask a question about the uploaded book..."
+)
 
 if question:
+
     if st.session_state.vectorstore is None:
         st.warning("Please upload and process a PDF book first.")
 
-    elif not os.getenv("GROQ_API_KEY"):
-        st.error("GROQ_API_KEY is missing. Add it to your .env file.")
+    elif not get_groq_api_key():
+        st.error(
+            "GROQ_API_KEY is missing. "
+            "Add it to your .env file or Streamlit Secrets."
+        )
 
     else:
+
         st.session_state.messages.append(
             {"role": "user", "content": question}
         )
@@ -268,7 +333,11 @@ if question:
             st.markdown(question)
 
         with st.chat_message("assistant"):
-            with st.spinner("Searching the book and writing an answer..."):
+
+            with st.spinner(
+                "Searching the book and writing an answer..."
+            ):
+
                 try:
                     answer, source_docs = answer_question(
                         question=question,
@@ -280,13 +349,28 @@ if question:
                     st.markdown(answer)
 
                     with st.expander("View retrieved pages"):
-                        for index, document in enumerate(source_docs, start=1):
-                            page_number = document.metadata.get("page", "Unknown")
-                            st.markdown(f"**Result {index} — Page {page_number}**")
-                            st.write(document.page_content[:700] + "...")
+
+                        for index, document in enumerate(
+                            source_docs, start=1
+                        ):
+
+                            page_number = document.metadata.get(
+                                "page", "Unknown"
+                            )
+
+                            st.markdown(
+                                f"**Result {index} — Page {page_number}**"
+                            )
+
+                            st.write(
+                                document.page_content[:700] + "..."
+                            )
 
                     st.session_state.messages.append(
-                        {"role": "assistant", "content": answer}
+                        {
+                            "role": "assistant",
+                            "content": answer,
+                        }
                     )
 
                 except Exception as error:
